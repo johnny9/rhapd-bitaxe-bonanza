@@ -1,0 +1,11 @@
+#!/bin/sh
+# These modules do not link ESP or Embassy and run on the host.
+set -eu
+cd "$(dirname "$0")/.."
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+for module in board_safety fan_logic flash_logic bridge_protocol rhap; do
+    rustc +stable --edition 2021 --test "src/$module.rs" -o "$work/$module"
+    "$work/$module"
+done
+python3 -B -m unittest discover -s tests -p 'test_*.py'

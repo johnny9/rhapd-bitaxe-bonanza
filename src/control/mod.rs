@@ -1,8 +1,7 @@
 use defmt::info;
 
-use embassy_futures::select::select;
+use embassy_futures::select::{select, Either};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::{Duration, TimeoutError};
 use embassy_usb::{
     class::cdc_acm::{CdcAcmClass, Receiver, Sender},
     driver::EndpointError,
@@ -12,69 +11,91 @@ use heapless::Vec;
 pub mod i2c;
 const I2C_COMMAND: u8 = 5;
 
+pub mod programmer;
+const PROGRAMMER_COMMAND: u8 = 0x0a;
+
+pub mod board;
+const BOARD_COMMAND: u8 = 0;
+pub mod system;
+const SYSTEM_COMMAND: u8 = 9;
+
 pub mod gpio;
 const GPIO_COMMAND: u8 = 6;
 
 pub mod adc;
 const ADC_COMMAND: u8 = 7;
 
-pub mod system;
-const SYSTEM_COMMAND: u8 = 9;
-
-#[repr(u8)]
-enum Status {
-    Success = 0x00,
-    Timeout = 0x10,
-    Invalid = 0x11,
-    BufferOverflow = 0x12,
-    Message = 0xff,
-}
+pub mod fan;
+const FAN_COMMAND: u8 = 8;
+const BRIDGE_COMMAND: u8 = 0x0b;
 
 // pub mod led;
 // const LED_COMMAND: u8 = 8;
 
 #[derive(defmt::Format)]
 struct Command {
-    id: i8,
-    bus: u8,
+    id: u8,
     inner: CommandInner,
 }
 
-// The I2C commands hold their data buffer inline; boxing it would need
-// an allocator this firmware does not have.
 #[allow(clippy::large_enum_variant)]
 #[derive(defmt::Format)]
 enum CommandInner {
+    Bridge(u8),
+    Programmer(programmer::Command),
+    Board(board::Command),
+    System(system::Command),
     I2c(i2c::Command),
     Gpio(gpio::Command),
     Adc(adc::Command),
-    System(system::Command),
+    Fan(fan::Command),
     Error(CommandError),
 }
 
 impl Command {
     fn from_bytes(buf: &[u8]) -> Result<Self, CommandError> {
-        let id = buf[0] as i8;
-        match buf[2] {
-            I2C_COMMAND => Ok(Self {
-                id,
-                bus: buf[1],
-                inner: CommandInner::I2c(i2c::Command::from_bytes(&buf[3..])?),
+        let [id, bus, page, data @ ..] = buf else {
+            return Err(CommandError::Invalid);
+        };
+        if *bus != 0 {
+            return Err(CommandError::Invalid);
+        }
+
+        match *page {
+            BRIDGE_COMMAND => match data {
+                [command @ 1..=5] => Ok(Self {
+                    id: *id,
+                    inner: CommandInner::Bridge(*command),
+                }),
+                _ => Err(CommandError::Invalid),
+            },
+            PROGRAMMER_COMMAND => Ok(Self {
+                id: *id,
+                inner: CommandInner::Programmer(programmer::Command::from_bytes(data)?),
             }),
-            GPIO_COMMAND => Ok(Self {
-                id,
-                bus: buf[1],
-                inner: CommandInner::Gpio(gpio::Command::from_bytes(&buf[3..])?),
-            }),
-            ADC_COMMAND => Ok(Self {
-                id,
-                bus: buf[1],
-                inner: CommandInner::Adc(adc::Command::from_bytes(&buf[3..])?),
+            BOARD_COMMAND => Ok(Self {
+                id: *id,
+                inner: CommandInner::Board(board::Command::from_bytes(data)?),
             }),
             SYSTEM_COMMAND => Ok(Self {
-                id,
-                bus: buf[1],
-                inner: CommandInner::System(system::Command::from_bytes(&buf[3..])?),
+                id: *id,
+                inner: CommandInner::System(system::Command::from_bytes(data)?),
+            }),
+            I2C_COMMAND => Ok(Self {
+                id: *id,
+                inner: CommandInner::I2c(i2c::Command::from_bytes(data)?),
+            }),
+            GPIO_COMMAND => Ok(Self {
+                id: *id,
+                inner: CommandInner::Gpio(gpio::Command::from_bytes(data)?),
+            }),
+            ADC_COMMAND => Ok(Self {
+                id: *id,
+                inner: CommandInner::Adc(adc::Command::from_bytes(data)?),
+            }),
+            FAN_COMMAND => Ok(Self {
+                id: *id,
+                inner: CommandInner::Fan(fan::Command::from_bytes(data)?),
             }),
             _ => Err(CommandError::Invalid),
         }
@@ -83,25 +104,29 @@ impl Command {
 
 #[derive(defmt::Format)]
 pub enum CommandError {
-    Timeout,
-    Invalid,
+    Timeout, // 0x10
+    Invalid, // 0x11
+    Denied,  // RHAP message error
+    Fault,   // RHAP message error
     BufferOverflow,
-    Message(&'static str),
+    Message(&'static str), // 0xff
 }
 
 impl CommandError {
-    fn status(&self) -> Status {
+    fn status(&self) -> crate::rhap::Status {
+        use crate::rhap::Status;
         match self {
-            CommandError::Timeout => Status::Timeout,
-            CommandError::Invalid => Status::Invalid,
-            CommandError::BufferOverflow => Status::BufferOverflow,
-            CommandError::Message(_) => Status::Message,
+            Self::Timeout => Status::Timeout,
+            Self::Invalid => Status::Invalid,
+            Self::BufferOverflow => Status::BufferOverflow,
+            Self::Denied | Self::Fault | Self::Message(_) => Status::Message,
         }
     }
-
     fn message(&self) -> &[u8] {
         match self {
-            CommandError::Message(msg) => msg.as_bytes(),
+            Self::Denied => b"Board command denied",
+            Self::Fault => b"Board or bridge fault",
+            Self::Message(message) => message.as_bytes(),
             _ => &[],
         }
     }
@@ -112,44 +137,49 @@ static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, Command, 8> = Channel::
 pub struct Controller {
     tx: Sender<'static, super::UsbDriver>,
     i2c: super::I2cDriver,
-    gpio: gpio::Pins<'static>,
     adc: adc::Pins<'static>,
+    fan: fan::Pins<'static>,
+    programmer: programmer::Programmer<'static>,
+    bridge: &'static crate::bridge::BridgeMutex,
 }
 
 pub trait ControllerCommand {
     async fn handle(&self, controller: &mut Controller) -> Result<Vec<u8, 256>, CommandError>;
 }
 
-fn build_response(id: u8, status: Status, data: &[u8]) -> Vec<u8, 260> {
-    let mut buf = Vec::<u8, 260>::new();
-    buf.extend_from_slice(&[0x00, 0x00]).unwrap();
-    buf.push(id).unwrap();
-    buf.push(status as u8).unwrap();
-    buf.extend_from_slice(data).unwrap();
-    let len = (buf.len() as u16).to_le_bytes();
-    buf[0..2].clone_from_slice(&len);
-    buf
-}
-
 impl Controller {
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self) -> Result<(), ControlTaskError> {
         loop {
             let cmd = COMMAND_CHANNEL.receive().await;
             let res = match cmd.inner {
+                CommandInner::Bridge(command) => crate::bridge::command(self.bridge, command).await,
+                CommandInner::Programmer(cmd) => self.programmer.handle(cmd).await,
+                CommandInner::I2c(_) if programmer::is_active() => Err(CommandError::Denied),
+                CommandInner::Board(cmd) => cmd.handle(self).await,
+                CommandInner::System(cmd) => cmd.handle(self).await,
                 CommandInner::I2c(cmd) => cmd.handle(self).await,
                 CommandInner::Gpio(cmd) => cmd.handle(self).await,
                 CommandInner::Adc(cmd) => cmd.handle(self).await,
-                CommandInner::System(cmd) => cmd.handle(self).await,
+                CommandInner::Fan(cmd) => cmd.handle(self).await,
                 CommandInner::Error(err) => Err(err),
             };
 
-            let id = cmd.id as u8;
-            let buf = match res {
-                Ok(res) => build_response(id, Status::Success, &res),
-                Err(err) => build_response(id, err.status(), err.message()),
-            };
-
-            let _ = self.tx.write_packet(&buf).await;
+            let mut buf = [0; 260];
+            let length = match res {
+                Ok(ref payload) => {
+                    crate::rhap::response(&mut buf, cmd.id, crate::rhap::Status::Success, payload)
+                }
+                Err(ref error) => {
+                    crate::rhap::response(&mut buf, cmd.id, error.status(), error.message())
+                }
+            }
+            .unwrap();
+            for packet in buf[..length].chunks(64) {
+                self.tx.write_packet(packet).await?;
+            }
+            if length % 64 == 0 {
+                self.tx.write_packet(&[]).await?;
+            }
         }
     }
 }
@@ -158,28 +188,44 @@ impl Controller {
 pub async fn usb_task(
     class: CdcAcmClass<'static, super::UsbDriver>,
     i2c: super::I2cDriver,
-    gpio: gpio::Pins<'static>,
     adc: adc::Pins<'static>,
+    fan: fan::Pins<'static>,
+    programmer: programmer::Programmer<'static>,
+    bridge: &'static crate::bridge::BridgeMutex,
 ) -> ! {
-    let (tx, mut rx, mut _ctrl) = class.split_with_control();
-    let mut controller = Controller { tx, i2c, gpio, adc };
+    let (tx, mut rx, mut ctrl) = class.split_with_control();
+    let mut controller = Controller {
+        tx,
+        i2c,
+        adc,
+        fan,
+        programmer,
+        bridge,
+    };
 
     loop {
         rx.wait_connection().await;
+        while !rx.dtr() {
+            ctrl.control_changed().await;
+        }
         info!("Control: Connected");
-        let _ = select(pipe_usb_read(&mut rx), controller.run()).await;
+        let _ = select(pipe_usb_read(&mut rx, &mut ctrl), controller.run()).await;
+        controller.programmer.abort();
+        fan::force_full_speed();
+        gpio::shutdown();
+        while COMMAND_CHANNEL.try_receive().is_ok() {}
         info!("Control: Disconnected");
     }
 }
 
-enum ControlTaskError {
+pub enum ControlTaskError {
     Disconnected,
 }
 
 impl From<EndpointError> for ControlTaskError {
     fn from(val: EndpointError) -> Self {
         match val {
-            EndpointError::BufferOverflow => panic!("Buffer overflow"),
+            EndpointError::BufferOverflow => ControlTaskError::Disconnected,
             EndpointError::Disabled => ControlTaskError::Disconnected {},
         }
     }
@@ -187,56 +233,69 @@ impl From<EndpointError> for ControlTaskError {
 
 async fn pipe_usb_read(
     rx: &mut Receiver<'static, super::UsbDriver>,
+    ctrl: &mut embassy_usb::class::cdc_acm::ControlChanged<'static>,
 ) -> Result<(), ControlTaskError> {
-    let mut buf = [0; 4098];
-
+    let mut decoder = crate::rhap::Decoder::new();
+    let mut packet = [0; 64];
     loop {
-        let mut num_read: usize = 0;
-
-        'read: loop {
-            let read = rx.read_packet(&mut buf[num_read..]);
-
-            match embassy_time::with_timeout(Duration::from_millis(4), read).await {
-                Ok(Ok(n)) => {
-                    num_read += n;
-
-                    if num_read >= 5 {
-                        let to_read = u16::from_le_bytes(buf[0..2].try_into().unwrap()) as usize;
-
-                        if num_read >= to_read {
-                            let excess = num_read - to_read;
-
-                            match Command::from_bytes(&buf[2..to_read]) {
-                                Ok(cmd) => COMMAND_CHANNEL.send(cmd).await,
-                                Err(err) => {
-                                    COMMAND_CHANNEL
-                                        .send(Command {
-                                            id: -1,
-                                            bus: 0,
-                                            inner: CommandInner::Error(err),
-                                        })
-                                        .await
-                                }
-                            }
-
-                            let mut new_buf = [0; 4098];
-                            new_buf[..excess].clone_from_slice(&buf[to_read..to_read + excess]);
-
-                            num_read = excess;
-                            buf = new_buf;
-                        }
-                    }
+        let read = select(rx.read_packet(&mut packet), ctrl.control_changed());
+        let result = if decoder.is_empty() {
+            Ok(read.await)
+        } else {
+            embassy_time::with_timeout(embassy_time::Duration::from_millis(100), read).await
+        };
+        let n = match result {
+            Ok(Either::First(result)) => result?,
+            Ok(Either::Second(())) => {
+                if !rx.dtr() {
+                    return Err(ControlTaskError::Disconnected);
                 }
-
-                Ok(Err(err)) => {
-                    return Err(err.into());
-                }
-
-                Err(TimeoutError) => {
-                    let _error = CommandError::Timeout;
-                    break 'read;
-                }
+                continue;
             }
+            Err(_) => {
+                COMMAND_CHANNEL
+                    .send(Command {
+                        id: decoder.id(),
+                        inner: CommandInner::Error(CommandError::Timeout),
+                    })
+                    .await;
+                decoder.clear();
+                continue;
+            }
+        };
+        if decoder.push(&packet[..n]).is_err() {
+            COMMAND_CHANNEL
+                .send(Command {
+                    id: decoder.id(),
+                    inner: CommandInner::Error(CommandError::BufferOverflow),
+                })
+                .await;
+            decoder.clear();
+            continue;
+        }
+        loop {
+            let command = match decoder.frame() {
+                Ok(Some(frame)) => match Command::from_bytes(&frame[2..]) {
+                    Ok(command) => command,
+                    Err(error) => Command {
+                        id: frame[2],
+                        inner: CommandInner::Error(error),
+                    },
+                },
+                Ok(None) => break,
+                Err(_) => {
+                    COMMAND_CHANNEL
+                        .send(Command {
+                            id: decoder.id(),
+                            inner: CommandInner::Error(CommandError::Invalid),
+                        })
+                        .await;
+                    decoder.clear();
+                    break;
+                }
+            };
+            decoder.consume();
+            COMMAND_CHANNEL.send(command).await;
         }
     }
 }

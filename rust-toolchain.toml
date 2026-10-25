@@ -1,2 +1,4 @@
 [toolchain]
-channel = "esp"
+# Retain the toolchain selected by the Bonanza ADC/SWD port; newer LLVM
+# releases have hit Xtensa release-codegen failures (bitaxe-raw issue #16).
+channel = "esp-1.93.0.0"

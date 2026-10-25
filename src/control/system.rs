@@ -34,6 +34,9 @@ impl super::ControllerCommand for Command {
         &self,
         _controller: &mut super::Controller,
     ) -> Result<Vec<u8, 256>, CommandError> {
+        super::gpio::shutdown();
+        // Let the independent PWM owner apply full fan before the ESP resets.
+        embassy_time::Timer::after_millis(20).await;
         match self {
             Command::Reboot => {
                 info!("System: rebooting");

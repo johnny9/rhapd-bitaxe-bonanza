@@ -1,0 +1,61 @@
+--- upstream/src/analog/adc/xtensa.rs
++++ bonanza/src/analog/adc/xtensa.rs
+@@ -175,6 +175,10 @@
+     }
+ 
+     fn set_init_code(data: u16) {
++        // Backport esp-rs/esp-hal#4286: select the calibrated ADC reference
++        // before applying the eFuse bias code (same order as ESP-IDF).
++        #[cfg(esp32s3)]
++        regi2c::ADC_SAR1_DREF.write_field(4);
+         let [msb, lsb] = data.to_be_bytes();
+ 
+         regi2c::ADC_SAR1_INITIAL_CODE_HIGH.write_field(msb);
+@@ -278,6 +282,10 @@
+     }
+ 
+     fn set_init_code(data: u16) {
++        // Backport esp-rs/esp-hal#4286: select the calibrated ADC reference
++        // before applying the eFuse bias code (same order as ESP-IDF).
++        #[cfg(esp32s3)]
++        regi2c::ADC_SAR2_DREF.write_field(4);
+         let [msb, lsb] = data.to_be_bytes();
+ 
+         regi2c::ADC_SAR2_INITIAL_CODE_HIGH.write_field(msb);
+@@ -492,30 +500,30 @@
+ #[cfg(esp32s3)]
+ impl super::AdcCalEfuse for crate::peripherals::ADC1<'_> {
+     fn init_code(atten: Attenuation) -> Option<u16> {
+-        Efuse::rtc_calib_init_code(1, atten)
++        Efuse::rtc_calib_init_code(0, atten)
+     }
+ 
+     fn cal_mv(atten: Attenuation) -> u16 {
+-        Efuse::rtc_calib_cal_mv(1, atten)
++        Efuse::rtc_calib_cal_mv(0, atten)
+     }
+ 
+     fn cal_code(atten: Attenuation) -> Option<u16> {
+-        Efuse::rtc_calib_cal_code(1, atten)
++        Efuse::rtc_calib_cal_code(0, atten)
+     }
+ }
+ 
+ #[cfg(esp32s3)]
+ impl super::AdcCalEfuse for crate::peripherals::ADC2<'_> {
+     fn init_code(atten: Attenuation) -> Option<u16> {
+-        Efuse::rtc_calib_init_code(2, atten)
++        Efuse::rtc_calib_init_code(1, atten)
+     }
+ 
+     fn cal_mv(atten: Attenuation) -> u16 {
+-        Efuse::rtc_calib_cal_mv(2, atten)
++        Efuse::rtc_calib_cal_mv(1, atten)
+     }
+ 
+     fn cal_code(atten: Attenuation) -> Option<u16> {
+-        Efuse::rtc_calib_cal_code(2, atten)
++        Efuse::rtc_calib_cal_code(1, atten)
+     }
+ }
+ 

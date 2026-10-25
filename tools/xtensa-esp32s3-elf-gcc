@@ -5,7 +5,12 @@
 # When more than one crosstool release is installed, the newest wins.
 set -eu
 
-root="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/esp/xtensa-esp-elf"
+if [ -n "${ESP_GCC:-}" ]; then
+    exec "$ESP_GCC" "$@"
+fi
+
+toolchain="${RUSTUP_TOOLCHAIN:-esp-1.93.0.0}"
+root="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$toolchain/xtensa-esp-elf"
 gcc=$(ls -d "$root"/*/xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc 2>/dev/null \
     | sort -V | tail -n 1)
 

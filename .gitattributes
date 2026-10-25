@@ -1,0 +1,2 @@
+# Preserve the published HAL sources and patch context verbatim.
+vendor/** -whitespace

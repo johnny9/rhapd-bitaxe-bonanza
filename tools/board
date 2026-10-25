@@ -21,6 +21,7 @@ import termios
 import time
 
 RHAPD = ("1209", "6102")
+RHAPD_PRODUCT = "Bitaxe Bonanza RHAP-D"
 ROM_BOOTLOADER = ("303a", "1001")
 
 # RHAP-D control protocol: System page, reboot to bootloader.
@@ -78,10 +79,21 @@ def read(path):
 
 
 def find(ident, interface="00"):
+    matches = []
     for dev, found, num in ports():
-        if found == ident and num == interface:
-            return dev
-    return None
+        if found != ident or num != interface:
+            continue
+        if ident == RHAPD:
+            iface = os.path.realpath("/sys/class/tty/" + os.path.basename(dev) + "/device")
+            try:
+                if read(os.path.dirname(iface) + "/product") != RHAPD_PRODUCT:
+                    continue
+            except OSError:
+                continue
+        matches.append(dev)
+    if len(matches) > 1:
+        die("multiple matching boards; connect only the Bonanza being flashed")
+    return matches[0] if matches else None
 
 
 def open_raw(dev):
@@ -107,9 +119,12 @@ def wait_for(ident, timeout):
 
 
 def bootloader():
-    if find(ROM_BOOTLOADER):
-        return
     control = find(RHAPD)
+    rom = find(ROM_BOOTLOADER)
+    if control and rom:
+        die("another ROM bootloader is connected; connect only the target Bonanza")
+    if rom:
+        return
     if not control:
         die("no RHAP-D or ROM bootloader on USB")
     # A firmware whose control task has died still enumerates but
@@ -117,10 +132,13 @@ def bootloader():
     signal.signal(signal.SIGALRM, lambda *_: die("RHAP-D is not answering; power-cycle the board"))
     signal.alarm(10)
     fd = open_raw(control)
-    os.write(fd, REBOOT_TO_BOOTLOADER)
-    os.close(fd)
-    if not wait_for(ROM_BOOTLOADER, 5):
-        die("RHAP-D did not come back as the ROM bootloader")
+    try:
+        os.write(fd, REBOOT_TO_BOOTLOADER)
+        # Keep DTR asserted until the command runs and USB detaches.
+        if not wait_for(ROM_BOOTLOADER, 5):
+            die("RHAP-D did not come back as the ROM bootloader")
+    finally:
+        os.close(fd)
     signal.alarm(0)
 
 

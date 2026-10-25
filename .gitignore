@@ -1,3 +1,4 @@
 target/
 espup
-Cargo.lock
+
+flash_stub/stub.elf
