@@ -219,14 +219,18 @@ Firmware 0.1.1 uses a full RP2040 watchdog reset after COMMIT. The prior
 SYSRESETREQ sequence returned control replies in hardware testing but ASIC
 discovery failed until a full RP2040 reset. COMMIT clears both debug halts,
 requests the complete watchdog reset domains, and verifies the reset reason
-and that neither core remains halted. Source/build and hardware validation
-results must be recorded for the exact tested revision. Native tests cover RHAP framing, board
-output ordering, fan conversions, bridge payload validation and RP2040 upload
-validation. Python tests check USB target selection. Release compilation and
-Clippy pass with the local compiler described above. Hardware USB/UART/SWD,
-trip/disconnect/reset recovery, voltage accuracy, thermal behavior and mining
-qualification remain outstanding. Earlier bitaxe-raw hardware results do not
-qualify this RHAP fork.
+and that neither core remains halted. This improved the reset checks, but
+**did not resolve the tested ESP-Miner restoration failure**: ASIC discovery
+still required an additional RP2040 watchdog reset after restoring ESP-Miner.
+The fork is not fully hardware-qualified.
+
+On board 1004, revision `6e76283` passed 33 USB protocol, safe-output, fan,
+bridge-control, SWD upload/readback and reboot checks. The 48,032-byte bridge
+image was verified across 188 pages, with CRC32 `4cff7b3c`. See the
+[hardware validation report](docs/hardware-validation-1004.md) for the failed
+recovery qualification and remaining coverage. Native tests (22 Rust and four
+Python), release compilation and Clippy passed. Earlier bitaxe-raw hardware
+results do not qualify this RHAP fork.
 
 The root [GPL-3.0 license](LICENSE) is retained from both upstream projects;
 vendor code and the flash trampoline retain their own licenses.
