@@ -5,7 +5,8 @@ Raw Hardware Access Protocol firmware for the ESP32-S3 on **Bitaxe Bonanza
 BZM2 ASIC serial traffic over two USB CDC ACM ports. A host performs ASIC
 initialization, mining, voltage programming and thermal supervision.
 
-This is a fork of [256 Foundation's Gamma RHAP-D](https://github.com/256foundation/rhapd-bitaxe-gamma),
+This is a standalone Bonanza project derived from
+[256 Foundation's Gamma RHAP-D](https://github.com/256foundation/rhapd-bitaxe-gamma),
 based on `59e90f6`. The 1004 GPIO, ADC calibration and SWD code comes from
 [bitaxe-raw's Bonanza port](https://github.com/bitaxeorg/bitaxe-raw/commit/ec84fc0355e165a2614fed6333b5cc16609a0977).
 It uses RHAP's explicit response status byte and System page `0x09`.
