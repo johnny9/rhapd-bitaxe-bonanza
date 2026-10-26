@@ -315,13 +315,35 @@ impl<'d> Swd<'d> {
     }
 
     pub async fn reset(&mut self) -> Result<()> {
-        self.mem_write(0xe000ed0c, 0x05fa0004)?;
-        Timer::after_millis(10).await;
-        // Debug registers survive SYSRESETREQ; release both cores explicitly.
+        // Release debug halt before resetting the whole RP2040. SYSRESETREQ
+        // brought back control replies in hardware testing but did not restore
+        // ASIC discovery; a full watchdog reset recovered the data path.
         self.attach(CORE1).await?;
         self.mem_write(DHCSR, DEBUG_KEY)?;
         self.attach(CORE0).await?;
         self.mem_write(DHCSR, DEBUG_KEY)?;
+
+        // Pico SDK watchdog_reboot reset domains: everything except ROSC/XOSC.
+        // Clear the ROM's optional SRAM reboot destination so boot uses flash.
+        self.mem_write(0x40010008, 0x0001fffc)?; // PSM_WDSEL
+        self.mem_write(0x4005801c, 0)?; // WATCHDOG_SCRATCH4
+        self.ap_write(4, 0x40058000)?; // MEM-AP TAR: WATCHDOG_CTRL
+                                       // The reset intentionally removes the debug link. Do not drain the
+                                       // posted write via RDBUFF, which can return a fault after it succeeds.
+        self.transfer(true, false, 0x0c, 0x80000000)?;
+        Timer::after_millis(100).await;
+
+        self.attach(CORE0).await?;
+        if self.mem_read(0x40058008)? & 2 == 0 {
+            return Err("RP2040 watchdog reset not confirmed");
+        }
+        if self.mem_read(DHCSR)? & (1 << 17) != 0 {
+            return Err("RP2040 core 0 halted after reset");
+        }
+        self.attach(CORE1).await?;
+        if self.mem_read(DHCSR)? & (1 << 17) != 0 {
+            return Err("RP2040 core 1 halted after reset");
+        }
         Ok(())
     }
 }

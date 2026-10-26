@@ -1274,7 +1274,7 @@ checksum = "4f1b3bc831f92381018fd9c6350b917c7b21f1eed35a65a51900e0e55a3d7afa"
 
 [[package]]
 name = "rhapd-bitaxe-bonanza"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "critical-section",
  "defmt 0.3.100",

@@ -34,7 +34,7 @@ pub type I2cDriver = i2c::master::I2c<'static, esp_hal::Async>;
 pub type UsbDriver = esp_hal::otg_fs::asynch::Driver<'static>;
 pub type UsbDevice = embassy_usb::UsbDevice<'static, UsbDriver>;
 
-const VERSION: u16 = 0x0100;
+const VERSION: u16 = 0x0101;
 
 static MANUFACTURER: &str = "OSMU";
 static PRODUCT: &str = "Bitaxe Bonanza RHAP-D";

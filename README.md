@@ -65,7 +65,7 @@ USB descriptors:
 - Manufacturer: `OSMU`
 - Product: **`Bitaxe Bonanza RHAP-D`**
 - Serial: the ESP32 MAC address as 12 hex characters
-- Device release: `0x0100` for firmware `0.1.0`
+- Device release: `0x0101` for firmware `0.1.1`
 - First serial port: control; second serial port: ASIC data
 
 Open the control port with **DTR asserted**. Closing it/deasserting DTR or
@@ -201,7 +201,7 @@ enable before BEGIN. PGOOD must be low and trip clear. Flash capacity is 2 MiB.
 | `0x01` | empty | RP2040 DPIDR:u32LE |
 | `0x10` BEGIN | image-size:u32LE, CRC32:u32LE, first 264 image bytes | schema `1`, verified-count:u32LE, readback-CRC32:u32LE |
 | `0x20` PAGE | offset:u32LE, 1..256 bytes | schema/count/CRC |
-| `0x30` COMMIT | empty | final schema/count/CRC after reset |
+| `0x30` COMMIT | empty | final schema/count/CRC after full watchdog reset |
 | `0x7f` ABORT | empty | zero |
 
 The image header must contain a valid RP2040 boot2 CRC, SRAM stack pointer and
@@ -215,7 +215,12 @@ the SRAM algorithm source and reproducible build command.
 
 ## Qualification
 
-Firmware 0.1.0 is source/build tested. Native tests cover RHAP framing, board
+Firmware 0.1.1 uses a full RP2040 watchdog reset after COMMIT. The prior
+SYSRESETREQ sequence returned control replies in hardware testing but ASIC
+discovery failed until a full RP2040 reset. COMMIT clears both debug halts,
+requests the complete watchdog reset domains, and verifies the reset reason
+and that neither core remains halted. Source/build and hardware validation
+results must be recorded for the exact tested revision. Native tests cover RHAP framing, board
 output ordering, fan conversions, bridge payload validation and RP2040 upload
 validation. Python tests check USB target selection. Release compilation and
 Clippy pass with the local compiler described above. Hardware USB/UART/SWD,
